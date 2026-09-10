@@ -1,0 +1,227 @@
+// elfsec.nv — the section header table, and the string table that gives
+// the sections their names.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// WHY NAMING IS A SEPARATE STEP
+//
+// A section header does not carry its name.  It carries an offset into
+// another section — the one `e_shstrndx` points at — and that section's
+// bytes have to be read before any section has a name.  A caller
+// holding the whole image never notices; a caller reading ranges has to
+// read the table, find the name table IN it, read that too, and then
+// name what it already has.
+//
+// So the walk is three functions and the caller does two reads between
+// them:
+//
+//     let table = read(elfsec.section_table_range(h))
+//     let bare  = elfsec.sections_unnamed(h, table, at)!
+//     let names = read(elfsec.name_table_range(h, bare)!)
+//     let secs  = elfsec.with_names(bare, names)!
+//
+// and `sections` is those three with the reads done from a buffer the
+// caller already holds.  Both exist because both callers exist.
+//
+// THE TWO PLACES A FILE LIES ABOUT ITS OWN SHAPE
+//
+// A file with more than 65,279 sections writes `e_shnum = 0` and puts
+// the real count in section 0's `sh_size`; a file whose name table is
+// past index 65,279 writes `e_shstrndx = SHN_XINDEX` and puts the real
+// index in section 0's `sh_link`.  Section 0 is otherwise entirely
+// zero, and its whole purpose is to hold those two escapes.  Both are
+// resolved here rather than left to the caller, because a caller that
+// did not know about them reads a table of length zero out of a file
+// with forty thousand sections and reports nothing wrong.
+
+// ElfSectionKind is `sh_type`: what a section holds.
+//
+// Named for the ones a reader branches on and kept as a number
+// otherwise, because `SHT_LOOS` upward is open by design and a firmware
+// toolchain puts its own things there.
+pub enum ElfSectionKind
+    // `SHT_NULL`: section 0, and the two escapes described above.
+    SecNull
+    // `SHT_PROGBITS`: bytes the program defines.  `.text`, `.rodata`,
+    // and `.defmt`.
+    SecProgBits
+    // `SHT_SYMTAB`: the full symbol table.
+    SecSymbolTable
+    // `SHT_STRTAB`: NUL-terminated strings, indexed by byte offset.
+    SecStringTable
+    // `SHT_RELA`: relocations with addends.
+    SecRelaEntries
+    // `SHT_HASH`: the symbol hash table.
+    SecHashTable
+    // `SHT_DYNAMIC`: dynamic linking information.
+    SecDynamic
+    // `SHT_NOTE`: a note.  Build IDs live here.
+    SecNote
+    // `SHT_NOBITS`: occupies address space and no file bytes.  `.bss`.
+    // Its range is empty, and that is not a fault.
+    SecNoBits
+    // `SHT_REL`: relocations without addends.
+    SecRelEntries
+    // `SHT_DYNSYM`: the dynamic symbol table.
+    SecDynamicSymbols
+    // Anything else, by its number — including everything at
+    // `SHT_LOOS` and above.
+    SecOtherKind(value: Int)
+
+// ElfSection is one section header, with its bytes located and its name
+// resolved.
+//
+// `name` is `""` before `with_names` has run, and a caller that wants
+// to know which of the two it is holding asks `name_offset`, which is
+// the raw field and is meaningful either way.
+pub struct ElfSection
+    // Position in the section header table, which is what `sh_link` and
+    // `st_shndx` elsewhere in the file point at.
+    index: Int
+    // The name, resolved through the section name table.  `""` for a
+    // section with no name, and also for a section whose name has not
+    // been resolved yet.
+    name: Str
+    // `sh_name`: the byte offset into the name table.  Kept so that an
+    // unnamed walk is still a complete one.
+    name_offset: Int
+    kind: ElfSectionKind
+    // `sh_flags`: `SHF_WRITE`, `SHF_ALLOC`, `SHF_EXECINSTR` and the
+    // rest, as the bit set the file wrote.
+    flags: Int
+    // `sh_addr`: the address the section has at run time, or 0 for a
+    // section that is not loaded.  A `.defmt` section is not loaded and
+    // its address is 0, which is the point of it.
+    addr: Int
+    // `sh_offset` and `sh_size` as a range in the image.  Empty for
+    // `SecNoBits`.
+    bytes: ElfRange
+    // `sh_link`: a section index whose meaning depends on `kind` — for
+    // a symbol table it is the string table holding the symbol names.
+    link: Int
+    // `sh_info`: `kind`-dependent.  For a symbol table it is one past
+    // the last local symbol.
+    info: Int
+    // `sh_addralign`.
+    align: Int
+    // `sh_entsize`: the stride, for a section that is a table of fixed
+    // records.  0 for a section that is not.
+    entry_size: Int
+
+// section_table_range is where the section header table is, and how
+// long, with the count already multiplied by the stride.
+//
+// The empty range for a file with no section table.  The `e_shnum = 0`
+// escape is NOT resolved here — resolving it needs a read of section 0,
+// and this function does not read — so a caller reading in ranges reads
+// this, calls `sections_unnamed`, and gets the real count back from it.
+pub fn section_table_range(h: ElfHeader) -> ElfRange
+    todo("elf-nv.elfsec.section_table_range")
+
+// sections is every section header, named, out of an image the caller
+// holds.
+//
+// The whole walk in one call: the table, the two escapes in section 0,
+// the name table, and the names. `elffile.parse` is this plus the
+// header.
+//
+// A file with `e_shstrndx = SHN_UNDEF` has no name table at all, which
+// is legal; its sections come back with `name = ""` and it is not a
+// refusal.  A file whose `e_shstrndx` names a section that does not
+// exist is `ElfNoSectionNames`, because that one is a contradiction
+// rather than an absence.
+pub fn sections(h: ElfHeader, image: [u8]) -> Result<[ElfSection], ElfError>
+    todo("elf-nv.elfsec.sections")
+
+// sections_unnamed reads the section header table out of the table's
+// own bytes, resolving the `e_shnum` and `SHN_XINDEX` escapes and
+// leaving every `name` empty.
+//
+// `at` is where `table` came from in the image, so refusals carry the
+// image's offsets.  The returned list is the real length — a caller
+// that read `section_table_range` and got 64 bytes for one section
+// header can find forty thousand sections here, and then has to read
+// the rest; `section_table_range_of` is how it asks where.
+pub fn sections_unnamed(h: ElfHeader, table: [u8], at: Int) -> Result<[ElfSection], ElfError>
+    todo("elf-nv.elfsec.sections_unnamed")
+
+// section_table_range_of is the section table's range with the
+// `e_shnum = 0` escape already resolved, given section 0.
+//
+// The second read a range-reading caller makes: it read one section
+// header (the first), it now knows the true count, and this is how many
+// bytes the whole table actually is.
+pub fn section_table_range_of(h: ElfHeader, first: ElfSection) -> ElfRange
+    todo("elf-nv.elfsec.section_table_range_of")
+
+// name_table_range is where the section name table lives, resolving
+// `SHN_XINDEX` through section 0.
+//
+// `ElfNoSectionNames` when `e_shstrndx` names a section the file does
+// not have; the empty range when the file says it has no name table,
+// which `with_names` then turns into empty names rather than a refusal.
+pub fn name_table_range(h: ElfHeader, bare: [ElfSection]) -> Result<ElfRange, ElfError>
+    todo("elf-nv.elfsec.name_table_range")
+
+// with_names resolves every section's `name_offset` against the name
+// table's bytes.
+//
+// A copy of the list with `name` filled in; the input is unchanged,
+// because a caller that wanted the offsets still has them.
+pub fn with_names(bare: [ElfSection], names: [u8]) -> Result<[ElfSection], ElfError>
+    todo("elf-nv.elfsec.with_names")
+
+// find is the section with this name, or `None`.
+//
+// `None` and NOT a refusal: a firmware with no `.defmt` section is an
+// ordinary firmware, and a decoder asking for one is asking a question
+// whose answer may legitimately be no.  That is the whole reason this
+// returns an option while `at` returns a `Result`.
+//
+// The first match wins.  ELF permits two sections with the same name
+// and linkers produce them — `.text` from two input objects that were
+// not merged — so a caller that means all of them uses `find_all`.
+pub fn find(secs: [ElfSection], name: Str) -> ?ElfSection
+    todo("elf-nv.elfsec.find")
+
+// find_all is every section with this name, in table order.
+pub fn find_all(secs: [ElfSection], name: Str) -> [ElfSection]
+    todo("elf-nv.elfsec.find_all")
+
+// at is the section with this index.
+//
+// A `Result` rather than an option because an index that is out of
+// range came from somewhere IN the file — an `sh_link`, an `st_shndx` —
+// and a file pointing at a section it does not have is malformed rather
+// than merely unhelpful.
+pub fn at(secs: [ElfSection], index: Int) -> Result<ElfSection, ElfError>
+    todo("elf-nv.elfsec.at")
+
+// string_at is the NUL-terminated string starting at `at` in a string
+// table's bytes.
+//
+// The one primitive both name tables are read with.  `at` is an offset
+// into the TABLE, because that is what `sh_name` and `st_name` hold;
+// the refusal's own offset is the image's, which is why `base` says
+// where the table came from.
+//
+// ELF names are bytes and the specification says nothing about their
+// encoding, so a name that is not UTF-8 is `ElfStringNotUtf8` — a
+// refusal of the conversion, not of the file.  A caller that wants the
+// bytes takes the table's range and reads them.
+pub fn string_at(table: [u8], base: Int, at: Int) -> Result<Str, ElfError>
+    todo("elf-nv.elfsec.string_at")
+
+// kind_name is `sh_type` as one word: `"progbits"`, `"symtab"`,
+// `"strtab"`, or `"type 0x…"`.
+pub fn kind_name(k: ElfSectionKind) -> Str
+    todo("elf-nv.elfsec.kind_name")
+
+// is_allocated says whether `SHF_ALLOC` is set — whether the section
+// occupies memory at run time.
+//
+// The predicate that separates a firmware's contents from its metadata.
+// `.defmt` is not allocated, which is why interning a format string
+// into it costs the device no flash at all.
+pub fn is_allocated(s: ElfSection) -> Bool
+    todo("elf-nv.elfsec.is_allocated")

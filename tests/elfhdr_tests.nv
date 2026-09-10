@@ -1,0 +1,168 @@
+// tests/elfhdr_tests.nv — the API tests for the identification and the
+// file header, written against the signatures.
+//
+// They COMPILE today and they FAIL at run with `not implemented`.  The
+// ones worth reading are the ones the compiler has already decided by
+// the time the run starts: `test_the_range_shape_needs_no_image` would
+// not compile if `header_range` took the image, which is the whole
+// argument that a caller without the file can still read the header.
+//
+// The bytes below are a real 32-bit little-endian Arm ELF header,
+// written out by hand, so the assertions are against `readelf`'s
+// answers and not against this package's own idea of them.
+
+use std.test
+use elfhdr
+use elferr
+
+// The first 52 bytes of an `ET_EXEC` for `EM_ARM`, 32-bit
+// little-endian: the header a Cortex-M firmware starts with.
+fn an_arm_firmware_header() -> [u8]
+    [0x7F as u8, 0x45 as u8, 0x4C as u8, 0x46 as u8,   // magic
+     0x01 as u8,   // ELFCLASS32
+     0x01 as u8,   // ELFDATA2LSB
+     0x01 as u8,   // EI_VERSION
+     0x00 as u8,   // EI_OSABI
+     0x00 as u8,   // EI_ABIVERSION
+     0x00 as u8, 0x00 as u8, 0x00 as u8,
+     0x00 as u8, 0x00 as u8, 0x00 as u8, 0x00 as u8,   // EI_PAD
+     0x02 as u8, 0x00 as u8,   // e_type = ET_EXEC
+     0x28 as u8, 0x00 as u8,   // e_machine = EM_ARM
+     0x01 as u8, 0x00 as u8, 0x00 as u8, 0x00 as u8,   // e_version
+     0x01 as u8, 0x01 as u8, 0x00 as u8, 0x08 as u8,   // e_entry
+     0x34 as u8, 0x00 as u8, 0x00 as u8, 0x00 as u8,   // e_phoff
+     0x00 as u8, 0x10 as u8, 0x00 as u8, 0x00 as u8,   // e_shoff = 4096
+     0x00 as u8, 0x02 as u8, 0x00 as u8, 0x05 as u8,   // e_flags
+     0x34 as u8, 0x00 as u8,   // e_ehsize = 52
+     0x20 as u8, 0x00 as u8,   // e_phentsize = 32
+     0x02 as u8, 0x00 as u8,   // e_phnum = 2
+     0x28 as u8, 0x00 as u8,   // e_shentsize = 40
+     0x0A as u8, 0x00 as u8,   // e_shnum = 10
+     0x09 as u8, 0x00 as u8]   // e_shstrndx = 9
+
+@test
+fn test_the_magic_is_four_bytes_and_no_more() [io]
+    // `is_elf` exists so that a tool can reject a linker script or a
+    // `.hex` without paying for a parse, which is why it takes the
+    // whole image and looks at four bytes of it.
+    test.case("an ELF file")
+    test.assert(elfhdr.is_elf(an_arm_firmware_header()))
+
+    test.case("and a file that is not one")
+    test.assert(not elfhdr.is_elf([0x4D as u8, 0x5A as u8, 0x90 as u8, 0x00 as u8]))
+
+@test
+fn test_the_identification_is_the_first_sixteen_bytes() [io]
+    test.case("ident_range")
+    let r = elfhdr.ident_range()
+    test.assert(r.at == 0)
+    test.assert(r.len == 16)
+
+    test.case("and what it says about an Arm firmware")
+    let id = elfhdr.ident(an_arm_firmware_header())!
+    match id.class
+        Elf32 => test.assert(true)
+        Elf64 => test.fail("EI_CLASS was 1")
+    match id.endian
+        ElfLittle => test.assert(true)
+        ElfBig    => test.fail("EI_DATA was 1")
+    test.assert(id.version == 1)
+
+@test
+fn test_the_range_shape_needs_no_image() [io]
+    // ASSERTED BY THE COMPILER as much as by the run.  `header_range`
+    // takes an `ElfIdent` and NOT an image: a caller reading off a
+    // probe has sixteen bytes and has to know how many more to ask for
+    // before it can ask for them.  A signature that took the image
+    // would have made that caller impossible, and it is half of what
+    // this package is for.
+    test.case("a 32-bit header is 52 bytes")
+    let id32 = ElfIdent { class: Elf32, endian: ElfLittle, version: 1, os_abi: 0, abi_version: 0 }
+    let r32 = elfhdr.header_range(id32)
+    test.assert(r32.at == 0)
+    test.assert(r32.len == 52)
+
+    test.case("and a 64-bit header is 64")
+    let id64 = ElfIdent { class: Elf64, endian: ElfLittle, version: 1, os_abi: 0, abi_version: 0 }
+    test.assert(elfhdr.header_range(id64).len == 64)
+
+@test
+fn test_the_header_says_where_the_section_table_is_and_how_long() [io]
+    // The multiplication is done HERE and not by the caller: `e_shoff`
+    // with `e_shnum * e_shentsize` is the arithmetic an author writing
+    // this by hand gets wrong, and a range is what a caller reading
+    // from a probe wants handed to it.
+    test.case("a firmware with ten 40-byte section headers at 4096")
+    let h = elfhdr.header(an_arm_firmware_header())!
+    test.assert(h.section_table.at == 4096)
+    test.assert(h.section_table.len == 400)
+    test.assert(h.section_entry_size == 40)
+    test.assert(h.section_count == 10)
+    test.assert(h.section_names_index == 9)
+
+    test.case("and where the program headers are, unparsed")
+    test.assert(h.program_table.at == 52)
+    test.assert(h.program_table.len == 64)
+
+@test
+fn test_the_header_says_what_the_file_is_for() [io]
+    test.case("an executable for Arm")
+    let h = elfhdr.header(an_arm_firmware_header())!
+    match h.kind
+        ElfExecutable => test.assert(true)
+        _             => test.fail("e_type was ET_EXEC")
+    match h.machine
+        ElfArm => test.assert(true)
+        _      => test.fail("e_machine was EM_ARM")
+    test.assert(h.entry == 0x08000101)
+
+@test
+fn test_both_widths_have_a_stride_and_the_package_knows_them() [io]
+    // The four numbers a range-reading caller sizes its reads with, and
+    // the four `ElfBadSectionEntry` and `ElfBadSymbolEntry` compare
+    // against.  They are functions rather than constants so that a
+    // caller cannot hold a 32-bit stride while parsing a 64-bit file.
+    test.case("section headers")
+    test.assert(elfhdr.section_entry_size(Elf32) == 40)
+    test.assert(elfhdr.section_entry_size(Elf64) == 64)
+
+    test.case("symbols")
+    test.assert(elfhdr.symbol_entry_size(Elf32) == 16)
+    test.assert(elfhdr.symbol_entry_size(Elf64) == 24)
+
+    test.case("and the class in bits")
+    test.assert(elfhdr.class_bits(Elf32) == 32)
+    test.assert(elfhdr.class_bits(Elf64) == 64)
+
+@test
+fn test_a_buffer_that_is_not_an_elf_is_refused_at_byte_zero() [io]
+    test.case("a DOS executable")
+    match elfhdr.ident([0x4D as u8, 0x5A as u8, 0x90 as u8, 0x00 as u8])
+        Ok(_)  => test.fail("MZ is not ELF")
+        Err(e) =>
+            match e
+                ElfBadMagic(at) => test.assert(at == 0)
+                _               => test.fail("the magic is what failed")
+
+@test
+fn test_a_truncation_says_how_much_was_missing() [io]
+    // The two numbers together are what tells a truncated download from
+    // a header that points into space, and a caller reading in ranges
+    // uses `is_truncation` to decide whether reading more would help.
+    test.case("eight bytes of a header")
+    let e = ElfTruncated(16, 52, 8)
+    match elferr.offset_of(e)
+        Some(at) => test.assert(at == 16)
+        None     => test.fail("a truncation happened somewhere")
+    test.assert(elferr.is_truncation(e))
+    test.assert(not elferr.is_truncation(ElfBadMagic(0)))
+
+@test
+fn test_an_index_out_of_range_has_no_offset() [io]
+    // `offset_of` is `?Int` and not an `Int` with a `-1` in it, so that
+    // an arm with no place cannot put a plausible-looking `0` in
+    // somebody's log.
+    test.case("ElfNoSuchSectionIndex")
+    match elferr.offset_of(ElfNoSuchSectionIndex(12, 10))
+        None    => test.assert(true)
+        Some(_) => test.fail("an index is not a position in the file")

@@ -1,0 +1,129 @@
+// elferr.nv — every way a byte buffer refuses to be an ELF file, and
+// WHERE in the buffer it stopped being one.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// WHY A REFUSAL CARRIES AN OFFSET
+//
+// The buffer this package is handed is a file somebody built: a
+// firmware image out of a linker, an object file out of a compiler, a
+// core dump out of a kernel.  When one of them is wrong, the useful
+// report is not "malformed" — it is the byte a person pastes into
+// `xxd -s` or `readelf`'s offset column.  So the offset is IN the
+// variant rather than beside it, and a caller that logs the refusal
+// gets the position whether or not it thought to ask.
+//
+// The offset is counted from the first byte of the IMAGE, always, and
+// never from the start of whichever table was being walked.  A caller
+// holding one range out of a file it read piecewise adds the range's
+// own start itself, which is the only party that knows it.
+//
+// WHAT IS NOT AN ERROR HERE
+//
+// "That section is not present" is not a refusal.  A firmware without a
+// `.defmt` section is an ordinary firmware, and `elffile.section`
+// answers `?ElfSection` rather than a `Result` for exactly that reason.
+// This type is for a file that contradicts the ELF specification, not
+// for a file that does not contain what a caller hoped.
+//
+// WHAT IS NOT SUPPORTED IS ALSO NOT AN ERROR OF THE FILE
+//
+// `ElfBadClass` and `ElfBadEndian` are refusals of a byte the
+// specification does not define — class 3, endianness 0 — and not of a
+// file whose class this package would rather not read.  Both classes
+// and both endiannesses are read here, so there is no "unsupported"
+// arm to reach.
+
+// ElfError is why a buffer is not the ELF file it claimed to be.
+//
+// ```novo
+// use elferr
+//
+// fn report(e: ElfError) -> Str
+//     match elferr.offset_of(e)
+//         Some(at) => "byte ${at}: ${e.message()}"
+//         None     => e.message()
+// ```
+pub enum ElfError
+    // The first four bytes are not `0x7F 'E' 'L' 'F'`.  `at` is 0,
+    // always, and it is a field rather than a constant so that every
+    // arm of this enum answers `offset_of` the same way.
+    ElfBadMagic(at: Int)
+    // `e_ident[EI_CLASS]` is neither 1 (32-bit) nor 2 (64-bit).
+    ElfBadClass(at: Int, value: Int)
+    // `e_ident[EI_DATA]` is neither 1 (little-endian) nor 2 (big).
+    ElfBadEndian(at: Int, value: Int)
+    // `e_ident[EI_VERSION]` or `e_version` is not 1.  ELF has had one
+    // version since 1995 and a file claiming another was produced by
+    // something this package has no grammar for.
+    ElfBadVersion(at: Int, value: Int)
+    // A read ran past the end of the buffer.  `wanted` is how many
+    // bytes the structure needs at `at`, `have` how many the buffer
+    // still holds — the two numbers together are what distinguishes a
+    // truncated download from a header that points into space.
+    ElfTruncated(at: Int, wanted: Int, have: Int)
+    // `e_shentsize` is not the size of a section header for the file's
+    // class (40 for 32-bit, 64 for 64-bit).  A file whose entry stride
+    // disagrees with its class cannot be walked at all.
+    ElfBadSectionEntry(at: Int, size: Int)
+    // A section header's `sh_offset` and `sh_size` describe bytes that
+    // are not in the file.  `index` is the section, `at` the offset the
+    // header claimed.
+    ElfSectionOutOfRange(at: Int, index: Int)
+    // `e_shstrndx` names no section, so no section has a name.  A file
+    // with sections and no name table is legal only when `e_shstrndx`
+    // is `SHN_UNDEF`, and `elfsec.sections` answers that case with
+    // empty names rather than this refusal.
+    ElfNoSectionNames(at: Int)
+    // A section index outside `0 ..< count`.  Reached by `elfsec.at`
+    // and by a header field — `sh_link` on a symbol table, say — that
+    // points at a section the file does not have.
+    ElfNoSuchSectionIndex(index: Int, count: Int)
+    // `sh_entsize` on a symbol table is not the size of a symbol for
+    // the file's class (16 for 32-bit, 24 for 64-bit).
+    ElfBadSymbolEntry(at: Int, size: Int)
+    // A string table offset walks to the end of the table without
+    // meeting the NUL that terminates the string.
+    ElfUnterminatedString(at: Int)
+    // A string table entry is not UTF-8.  ELF names are bytes and the
+    // specification says nothing about their encoding, so this is a
+    // refusal of the CONVERSION rather than of the file: a caller that
+    // wants the bytes takes the section's range and reads them itself.
+    ElfStringNotUtf8(at: Int)
+    // A 64-bit field holds a value above `Int`'s range — an address
+    // with the top bit set, a size no file has.  `field` names it
+    // (`sh_size`, `st_value`) so the report says which one.  It is the
+    // one refusal in this package that is about novo-lang's integers
+    // rather than about ELF; see the README, § What `Int` costs.
+    ElfValueTooWide(at: Int, field: Str)
+
+// message renders the refusal as one line of prose, for a caller that
+// logs rather than branches.
+//
+// `Result<_, ElfError>` requires it: SPEC § 3.4 admits a `Result` error
+// type only if it implements `Error`.
+impl Error for ElfError
+    fn message(self) -> Str
+        todo("elf-nv.elferr.ElfError.message")
+
+// offset_of is the byte the refusal happened at, or `None` where the
+// refusal is not about a place.
+//
+// `ElfNoSuchSectionIndex` is the only arm with no offset: an index out
+// of range is a question about a table's length rather than about a
+// position in the file, and returning a plausible-looking `0` for it
+// would put a wrong number in somebody's log.  That is why the return
+// is `?Int` and not the `Int` with a `-1` sentinel that the shape
+// invites.
+pub fn offset_of(e: ElfError) -> ?Int
+    todo("elf-nv.elferr.offset_of")
+
+// is_truncation says whether the refusal means "the buffer stops too
+// soon" rather than "the bytes are wrong".
+//
+// The distinction a caller reading a file in ranges needs: a truncation
+// is answered by reading more, and everything else is answered by
+// giving up on the file.  `ElfTruncated` and `ElfUnterminatedString`
+// are the two arms it is true of.
+pub fn is_truncation(e: ElfError) -> Bool
+    todo("elf-nv.elferr.is_truncation")

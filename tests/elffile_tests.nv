@@ -1,0 +1,206 @@
+// tests/elffile_tests.nv — the API tests for the section table, the
+// symbol table and the two shapes a caller reads a file in.
+//
+// They COMPILE today and they FAIL at run with `not implemented`.  Two
+// of them are decided by the compiler before the run starts:
+// `test_an_elf_file_does_not_hold_the_image` would not compile if
+// `section_bytes` did not take the image back, and
+// `test_a_section_that_is_absent_is_not_a_fault` would not compile if
+// `find` returned a `Result`.
+
+use std.test
+use elffile
+use elfsec
+use elfsym
+use elfrange
+use elferr
+
+// A string table's bytes: an initial NUL, then `.defmt`, then
+// `.symtab`.  Offsets 1 and 8.
+fn a_name_table() -> [u8]
+    [0x00 as u8,
+     0x2E as u8, 0x64 as u8, 0x65 as u8, 0x66 as u8, 0x6D as u8, 0x74 as u8, 0x00 as u8,
+     0x2E as u8, 0x73 as u8, 0x79 as u8, 0x6D as u8, 0x74 as u8, 0x61 as u8, 0x62 as u8,
+     0x00 as u8]
+
+fn a_defmt_section() -> ElfSection
+    ElfSection { index: 4, name: ".defmt", name_offset: 1, kind: SecProgBits,
+                 flags: 0, addr: 0, bytes: elfrange.range(8192, 0),
+                 link: 0, info: 0, align: 1, entry_size: 0 }
+
+fn a_text_section() -> ElfSection
+    ElfSection { index: 1, name: ".text", name_offset: 16, kind: SecProgBits,
+                 flags: 6, addr: 0x08000000, bytes: elfrange.range(4096, 2048),
+                 link: 0, info: 0, align: 4, entry_size: 0 }
+
+@test
+fn test_a_range_is_a_place_and_not_a_borrow() [io]
+    // The type the whole sans-IO argument rests on: two integers that
+    // survive being sent to a probe, written to a file, or held while
+    // the image they describe is not in memory at all.
+    test.case("range")
+    let r = elfrange.range(4096, 2048)
+    test.assert(r.at == 4096)
+    test.assert(r.len == 2048)
+    test.assert(elfrange.range_end(r) == 6144)
+
+    test.case("and it knows whether it fits")
+    test.assert(elfrange.range_fits(r, 8192))
+    test.assert(not elfrange.range_fits(r, 5000))
+
+@test
+fn test_a_section_with_no_file_bytes_has_an_empty_range() [io]
+    // A `SHT_NOBITS` section occupies address space and no file bytes,
+    // and that is ordinary rather than a fault — which is why `len: 0`
+    // is a value and not a refusal.
+    test.case("empty")
+    let e = elfrange.empty(9000)
+    test.assert(e.at == 9000)
+    test.assert(e.len == 0)
+    test.assert(elfrange.range_end(e) == 9000)
+
+@test
+fn test_a_section_that_is_absent_is_not_a_fault() [io]
+    // ASSERTED BY THE COMPILER as much as by the run.  `find` returns
+    // `?ElfSection`: a firmware without a `.defmt` section is an
+    // ordinary firmware, and a `Result` here would have made "this
+    // program does not use deferred logging" look like a malformed
+    // file in every log that reported it.
+    test.case("a firmware with no .defmt")
+    let secs = [a_text_section()]
+    match elfsec.find(secs, ".defmt")
+        None    => test.assert(true)
+        Some(_) => test.fail("that list has one .text in it")
+
+    test.case("and one that has it")
+    match elfsec.find([a_text_section(), a_defmt_section()], ".defmt")
+        Some(s) => test.assert(s.index == 4)
+        None    => test.fail(".defmt is in that list")
+
+@test
+fn test_an_index_the_file_does_not_have_is_a_fault() [io]
+    // The other half of the distinction: an out-of-range index came
+    // from somewhere IN the file — an `sh_link`, an `st_shndx` — so a
+    // file pointing at a section it does not have is malformed rather
+    // than merely unhelpful, and `at` returns a `Result` for it.
+    test.case("section 12 of a file with one section")
+    match elfsec.at([a_text_section()], 12)
+        Ok(_)  => test.fail("there is one section")
+        Err(e) =>
+            match e
+                ElfNoSuchSectionIndex(i, n) =>
+                    test.assert(i == 12)
+                    test.assert(n == 1)
+                _                           => test.fail("the refusal names the index and the count")
+
+@test
+fn test_a_name_is_read_out_of_a_string_table_by_byte_offset() [io]
+    // `sh_name` and `st_name` are byte offsets into a table, not
+    // indices into a list of strings, which is why `string_at` takes an
+    // offset and walks to the NUL.
+    test.case(".defmt at offset 1")
+    test.assert(elfsec.string_at(a_name_table(), 0, 1)! == ".defmt")
+
+    test.case(".symtab at offset 8")
+    test.assert(elfsec.string_at(a_name_table(), 0, 8)! == ".symtab")
+
+    test.case("and offset 0 is the empty name every table starts with")
+    test.assert(elfsec.string_at(a_name_table(), 0, 0)! == "")
+
+@test
+fn test_a_string_that_never_ends_is_refused() [io]
+    test.case("an offset past the last NUL")
+    match elfsec.string_at([0x2E as u8, 0x64 as u8], 0, 0)
+        Ok(_)  => test.fail("there is no NUL in those two bytes")
+        Err(e) => test.assert(elferr.is_truncation(e))
+
+@test
+fn test_an_elf_file_does_not_hold_the_image() [io]
+    // ASSERTED BY THE COMPILER.  `section_bytes` takes the image BACK
+    // from the caller, which is only necessary because an `ElfFile` is
+    // the index and not the bytes.  Had the struct carried the image,
+    // this signature would have one fewer parameter — and a caller
+    // reading a firmware off a probe, who never held the file at all,
+    // could not have built one.
+    test.case("the index alone")
+    let f = elffile.from_parts(a_header(), [a_text_section(), a_defmt_section()])
+    test.assert(elffile.section_count(f) == 2)
+
+    test.case("and the bytes come from the caller")
+    let image = [0x00 as u8, 0x01 as u8, 0x02 as u8, 0x03 as u8]
+    match elffile.section_bytes(f, ".nosuch", image)
+        Ok(b)  =>
+            match b
+                None    => test.assert(true)
+                Some(_) => test.fail("that section is not in the list")
+        Err(_) => test.fail("an absent section is not a malformed file")
+
+fn a_header() -> ElfHeader
+    ElfHeader {
+        ident: ElfIdent { class: Elf32, endian: ElfLittle, version: 1,
+                          os_abi: 0, abi_version: 0 },
+        kind: ElfExecutable, machine: ElfArm, entry: 0x08000101,
+        section_table: elfrange.range(4096, 400), section_entry_size: 40,
+        section_count: 10, section_names_index: 9,
+        program_table: elfrange.range(52, 64), program_entry_size: 32,
+        program_count: 2, flags: 0x05000200 }
+
+@test
+fn test_a_place_is_answerable_without_the_bytes() [io]
+    // The function a caller without the file uses: two integers, and no
+    // requirement that the image ever be in memory.
+    test.case("section_range")
+    let f = elffile.from_parts(a_header(), [a_text_section(), a_defmt_section()])
+    match elffile.section_range(f, ".text")
+        Some(r) =>
+            test.assert(r.at == 4096)
+            test.assert(r.len == 2048)
+        None    => test.fail(".text is in that list")
+
+@test
+fn test_a_symbol_names_its_own_string_table() [io]
+    // The mistake this function exists to make impossible: symbol names
+    // are in the table `sh_link` points at, NOT in `e_shstrndx`'s
+    // section, and reading them from the wrong one gives names that
+    // look almost right.
+    test.case("name_table follows sh_link")
+    let symtab = ElfSection { index: 8, name: ".symtab", name_offset: 8,
+                              kind: SecSymbolTable, flags: 0, addr: 0,
+                              bytes: elfrange.range(12288, 480), link: 9,
+                              info: 3, align: 4, entry_size: 16 }
+    let strtab = ElfSection { index: 9, name: ".strtab", name_offset: 24,
+                              kind: SecStringTable, flags: 0, addr: 0,
+                              bytes: elfrange.range(12768, 128), link: 0,
+                              info: 0, align: 1, entry_size: 0 }
+    let names = elfsym.name_table([a_text_section(), symtab, strtab], symtab)!
+    test.assert(names.index == 9)
+
+@test
+fn test_the_interned_strings_are_symbols_of_one_section() [io]
+    // The query the deferred-logging table is built with, and the
+    // reason a symbol table walk is in this package at all.
+    test.case("in_section")
+    let s = ElfSymbol { index: 4, name: "x = {=u8}", name_offset: 40,
+                        value: 7, size: 0, bind: BindGlobal,
+                        kind: SymNoType, section_index: 4 }
+    let other = ElfSymbol { index: 5, name: "main", name_offset: 64,
+                            value: 0x08000101, size: 96, bind: BindGlobal,
+                            kind: SymFunction, section_index: 1 }
+    let got = elfsym.in_section([s, other], 4)
+    test.assert(got.len() == 1)
+
+@test
+fn test_a_missing_symbol_and_a_missing_table_are_different_answers() [io]
+    // `symbol` is `Result<?ElfSymbol, …>` and not `?ElfSymbol`, because
+    // a person looking for a version symbol in a stripped binary needs
+    // "this firmware has no symbols at all" and "this firmware has no
+    // version symbol" to be different messages.
+    test.case("a list with no such name")
+    match elfsym.find([], "_deflog_version_")
+        None    => test.assert(true)
+        Some(_) => test.fail("that list is empty")
+
+    test.case("and a file with no symbol table")
+    match elfsym.symbol_table([a_text_section()])
+        Ok(_)  => test.fail("there is no .symtab in that list")
+        Err(_) => test.assert(true)

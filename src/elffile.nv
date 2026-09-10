@@ -1,0 +1,145 @@
+// elffile.nv — the whole file, indexed once, for the caller that has
+// the whole file.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// WHAT AN `ElfFile` IS, AND WHAT IT IS NOT
+//
+// It is the INDEX: the header and the named section table, parsed once.
+// It is not the bytes.  Every function here that answers with bytes
+// takes the image again, from the caller, and every function that
+// answers with a place answers with an `ElfRange`.
+//
+// That is a deliberate choice and it costs a parameter at each call.
+// What it buys is that the same index works for the caller who never
+// had the file — a probe reading a target's flash builds an `ElfFile`
+// out of four range reads and then asks it where `.defmt` is, without
+// anything the size of a firmware ever being in memory — and that a
+// `core` package is never quietly holding a megabyte on a caller's
+// behalf.  `docs/publishing.md` § How a `core` package takes bytes from
+// its host is the rule; this is the "core asks, host performs" shape,
+// with the whole-buffer convenience layered on top rather than under.
+//
+// WHY `parse` AND NOT `open`
+//
+// Nothing here opens anything.  A name that suggested a file descriptor
+// on a `core` package whose budget forbids one would be a small lie
+// told at the top of every example.
+
+// ElfFile is a parsed ELF index: the header, and every section header
+// with its name resolved.
+//
+// Deliberately not holding the image.  See the module note.
+pub struct ElfFile
+    header: ElfHeader
+    // Every section in table order, names resolved.  Empty for a file
+    // with no section table, which is legal and which a linker produces
+    // for a fully stripped object.
+    sections: [ElfSection]
+
+// parse reads the header and the named section table out of an image
+// the caller holds.
+//
+// The one call the ordinary host case needs.  It reads: the sixteen
+// identification bytes, the header, section 0 for the two escapes, the
+// section header table, and the section name table — and it copies none
+// of the file's contents.
+//
+// ```novo
+// use elffile
+// use elfsec
+//
+// fn defmt_range(image: [u8]) -> Result<?ElfRange, ElfError>
+//     let f = elffile.parse(image)!
+//     match elfsec.find(f.sections, ".defmt")
+//         None    => Ok(None)
+//         Some(s) => Ok(Some(s.bytes))
+// ```
+pub fn parse(image: [u8]) -> Result<ElfFile, ElfError>
+    todo("elf-nv.elffile.parse")
+
+// from_parts is an `ElfFile` assembled from a header and a named
+// section table a caller read for itself.
+//
+// THE RANGE SHAPE'S LAST STEP.  A caller reading off a probe walks
+// `elfhdr.ident_range`, `elfhdr.header_range`,
+// `elfsec.section_table_range`, `elfsec.name_table_range`, and then
+// arrives here with the same two values `parse` would have produced —
+// after which every query below works identically for both callers.
+pub fn from_parts(h: ElfHeader, secs: [ElfSection]) -> ElfFile
+    todo("elf-nv.elffile.from_parts")
+
+// section is the first section with this name, or `None`.
+pub fn section(f: ElfFile, name: Str) -> ?ElfSection
+    todo("elf-nv.elffile.section")
+
+// sections is every section header, in table order.
+pub fn sections(f: ElfFile) -> [ElfSection]
+    todo("elf-nv.elffile.sections")
+
+// section_at is the section with this index, refusing an index the file
+// does not have.
+pub fn section_at(f: ElfFile, index: Int) -> Result<ElfSection, ElfError>
+    todo("elf-nv.elffile.section_at")
+
+// section_range is where a named section's bytes are in the image, or
+// `None` if the file has no such section.
+//
+// THE FUNCTION A CALLER WITHOUT THE FILE USES.  It is the whole answer
+// for a reader that will do its own read — two integers, and no
+// requirement that the image ever be in memory.
+pub fn section_range(f: ElfFile, name: Str) -> ?ElfRange
+    todo("elf-nv.elffile.section_range")
+
+// section_bytes is a named section's contents, copied out of an image
+// the caller holds.
+//
+// The convenience over `section_range` plus `elfrange.slice`, and it
+// copies — novo-lang has no borrowing slice, so a function that hands
+// back bytes hands back a copy.  A caller that minds takes the range.
+//
+// `None` for a section the file does not have, so that "no `.defmt`
+// section" stays an answer rather than becoming a fault; the `Result`
+// is for a section header that points outside the file, which is one.
+pub fn section_bytes(f: ElfFile, name: Str, image: [u8]) -> Result<?[u8], ElfError>
+    todo("elf-nv.elffile.section_bytes")
+
+// symbols is every symbol of the file's symbol table, named, out of an
+// image the caller holds.
+//
+// `ElfNoSymbolTable` for a stripped file.
+pub fn symbols(f: ElfFile, image: [u8]) -> Result<[ElfSymbol], ElfError>
+    todo("elf-nv.elffile.symbols")
+
+// symbol is the first symbol with this name, or `None`.
+//
+// A `Result<?ElfSymbol, …>` and not a `?ElfSymbol`, because the two
+// answers it folds together are different: reading the symbol table can
+// FAIL, and the table can succeed and not contain the name.  A caller
+// looking for `_deflog_version_` in a stripped binary must be able to
+// tell "this firmware has no symbols" from "this firmware has no
+// version symbol", and one of those is a different message to a person.
+pub fn symbol(f: ElfFile, image: [u8], name: Str) -> Result<?ElfSymbol, ElfError>
+    todo("elf-nv.elffile.symbol")
+
+// class is whether the file's offsets are 32- or 64-bit.
+pub fn class(f: ElfFile) -> ElfClass
+    todo("elf-nv.elffile.class")
+
+// endian is the byte order of the file's multi-byte fields.
+pub fn endian(f: ElfFile) -> ElfEndian
+    todo("elf-nv.elffile.endian")
+
+// machine is the instruction set the file was built for.
+pub fn machine(f: ElfFile) -> ElfMachine
+    todo("elf-nv.elffile.machine")
+
+// entry is the address execution starts at, or 0 for a file that has no
+// entry point.
+pub fn entry(f: ElfFile) -> Int
+    todo("elf-nv.elffile.entry")
+
+// section_count is how many section headers the file has, with the
+// `e_shnum = 0` escape already resolved.
+pub fn section_count(f: ElfFile) -> Int
+    todo("elf-nv.elffile.section_count")

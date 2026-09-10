@@ -1,0 +1,34 @@
+[package]
+name        = "elf-nv"
+version     = "0.0.1"
+description = "The ELF subset a host tool needs: the header in all four class/endianness combinations, the section header table with names resolved, and the symbol table.  Every answer about WHERE something is comes back as a byte range, so the same reader serves a tool holding the whole file and a probe holding none of it.  Interface only — every body is a todo()."
+license     = "Apache-2.0"
+
+# An INTERFACE release: every `pub fn` body is a `todo()`, so the
+# signatures and the effect rows are published and nothing is
+# implemented.  `novo pkg publish` recognises the shape and requires
+# both the draft stability and the 0.0.x version; the first
+# implementation is the 0.1.0 published over it.
+stability   = "draft"
+
+# `core`: an ELF file is bytes the caller already read, and reading it
+# is arithmetic.  Nothing here opens a file, seeks in one, or talks to a
+# probe — the caller does all three, and every answer about a position
+# is an `ElfRange` it can act on.  There is not one effect row in the
+# package.
+layer       = "core"
+
+category    = "encoding"
+
+tags        = ["elf", "binary", "symbols", "sections", "firmware", "sans-io", "debuginfo"]
+repository  = "https://github.com/novolang/elf-nv"
+maintainers = ["novo-lang"]
+novo        = ">= 0.8.9"
+
+[docs.pages]
+"README.md" = "ELF, without a file"
+
+[dependencies]
+# None, and there will be none.  An ELF reader that took a dependency
+# would put it in every consumer of every firmware tool, and there is
+# nothing here but integer reads out of a buffer.

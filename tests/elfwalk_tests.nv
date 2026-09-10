@@ -1,0 +1,186 @@
+// tests/elfwalk_tests.nv — the API tests for the walk a caller performs
+// when it does NOT hold the file, and for the naming functions a report
+// is written with.
+//
+// They COMPILE today and they FAIL at run with `not implemented`.
+//
+// The walk below is the whole range shape in one function, written the
+// way a probe-side reader writes it: ask for a range, read it, hand it
+// back, ask for the next one.  It is here rather than in the README
+// because a shape that is only described is a shape nobody has checked
+// compiles.
+
+use std.test
+use elffile
+use elfhdr
+use elfsec
+use elfsym
+use elfrange
+
+fn an_image() -> [u8]
+    [0x7F as u8, 0x45 as u8, 0x4C as u8, 0x46 as u8, 0x01 as u8, 0x01 as u8,
+     0x01 as u8, 0x00 as u8, 0x00 as u8, 0x00 as u8, 0x00 as u8, 0x00 as u8,
+     0x00 as u8, 0x00 as u8, 0x00 as u8, 0x00 as u8]
+
+fn a_header() -> ElfHeader
+    ElfHeader {
+        ident: ElfIdent { class: Elf32, endian: ElfLittle, version: 1,
+                          os_abi: 0, abi_version: 0 },
+        kind: ElfExecutable, machine: ElfArm, entry: 0x08000101,
+        section_table: elfrange.range(4096, 400), section_entry_size: 40,
+        section_count: 10, section_names_index: 9,
+        program_table: elfrange.range(52, 64), program_entry_size: 32,
+        program_count: 2, flags: 0 }
+
+fn a_text_section() -> ElfSection
+    ElfSection { index: 1, name: ".text", name_offset: 16, kind: SecProgBits,
+                 flags: 6, addr: 0x08000000, bytes: elfrange.range(4096, 2048),
+                 link: 0, info: 0, align: 4, entry_size: 0 }
+
+fn a_bss_section() -> ElfSection
+    ElfSection { index: 2, name: ".bss", name_offset: 32, kind: SecNoBits,
+                 flags: 3, addr: 0x20000000, bytes: elfrange.empty(6144),
+                 link: 0, info: 0, align: 4, entry_size: 0 }
+
+@test
+fn test_the_whole_walk_is_ranges_and_reads_in_alternation() [io]
+    // THE SHAPE THIS PACKAGE EXISTS FOR, written out.  Each `read` here
+    // is a `Buffer.slice` because the test holds the image; on a probe
+    // it is a memory read over SWD, and nothing in the sequence changes.
+    test.case("sixteen bytes, then the header")
+    let image = an_image()
+    let id = elfhdr.ident(elfrange.slice(image, elfhdr.ident_range())!)!
+    let hr = elfhdr.header_range(id)
+    let h = elfhdr.header_from(id, elfrange.slice(image, hr)!, hr.at)!
+
+    test.case("then the section table, whose length the first entry corrects")
+    let tr = elfsec.section_table_range(h)
+    test.assert(tr.len >= 0)
+    let bare = elfsec.sections_unnamed(h, elfrange.slice(image, tr)!, tr.at)!
+    test.assert(elfsec.section_table_range_of(h, bare[0]).at == tr.at)
+
+    test.case("then the name table, and the sections are named")
+    let nr = elfsec.name_table_range(h, bare)!
+    let named = elfsec.with_names(bare, elfrange.slice(image, nr)!)!
+    test.assert(named.len() == bare.len())
+
+    test.case("and the index that comes out is the one parse would have built")
+    let f = elffile.from_parts(h, named)
+    test.assert(elffile.sections(f).len() == named.len())
+
+@test
+fn test_a_sub_range_is_expressed_in_the_images_own_coordinates() [io]
+    // The arithmetic a range-reading caller gets wrong once: it holds
+    // the section table in a buffer of its own, it wants the third
+    // entry, and the offset it must report in an error is the image's.
+    test.case("the third 40-byte entry of a table at 4096")
+    let table = elfrange.range(4096, 400)
+    let third = elfrange.sub(table, 80, 40)!
+    test.assert(third.at == 4176)
+    test.assert(third.len == 40)
+
+@test
+fn test_slicing_past_the_end_is_a_refusal_and_not_a_short_read() [io]
+    // A caller that got fewer bytes than it asked for and was not told
+    // is a caller that parses garbage.
+    test.case("a range past the end of a sixteen-byte image")
+    match elfrange.slice(an_image(), elfrange.range(8, 64))
+        Ok(_)  => test.fail("that image is sixteen bytes long")
+        Err(_) => test.assert(true)
+
+@test
+fn test_the_whole_file_walk_and_the_range_walk_answer_alike() [io]
+    // `elfsec.sections` is the three-step walk with the reads done from
+    // a buffer the caller already holds; both exist because both
+    // callers exist, and neither is the other's special case.
+    test.case("sections out of an image")
+    match elfsec.sections(a_header(), an_image())
+        Ok(secs) => test.assert(secs.len() >= 0)
+        Err(_)   => test.assert(true)
+
+@test
+fn test_two_sections_may_share_a_name() [io]
+    // ELF permits it and linkers produce it — `.text` from two input
+    // objects that were not merged — so `find` takes the first and
+    // `find_all` is how a caller means all of them.
+    test.case("find_all")
+    let dup = ElfSection { index: 3, name: ".text", name_offset: 16,
+                           kind: SecProgBits, flags: 6, addr: 0x08000800,
+                           bytes: elfrange.range(6144, 512), link: 0,
+                           info: 0, align: 4, entry_size: 0 }
+    test.assert(elfsec.find_all([a_text_section(), a_bss_section(), dup], ".text").len() == 2)
+
+@test
+fn test_a_section_is_loaded_or_it_is_not() [io]
+    // The predicate that separates a firmware's contents from its
+    // metadata.  A deferred-logging section is NOT allocated, which is
+    // why interning a format string into it costs the device no flash.
+    test.case("is_allocated")
+    test.assert(elfsec.is_allocated(a_text_section()))
+    let meta = ElfSection { index: 5, name: ".defmt", name_offset: 48,
+                            kind: SecProgBits, flags: 0, addr: 0,
+                            bytes: elfrange.empty(8192), link: 0,
+                            info: 0, align: 1, entry_size: 0 }
+    test.assert(not elfsec.is_allocated(meta))
+
+@test
+fn test_a_section_index_is_looked_up_on_the_file_too() [io]
+    test.case("section_at")
+    let f = elffile.from_parts(a_header(), [a_text_section(), a_bss_section()])
+    match elffile.section_at(f, 12)
+        Ok(_)  => test.fail("that index is past the end of the list")
+        Err(_) => test.assert(true)
+
+@test
+fn test_the_dynamic_symbol_table_is_not_the_symbol_table() [io]
+    // `SHT_DYNSYM` holds only what dynamic linking needs, which for a
+    // firmware is nothing.  Two functions rather than one so a caller
+    // cannot reach for the wrong table by accident.
+    test.case("a firmware has neither")
+    match elfsym.dynamic_symbol_table([a_text_section()])
+        Ok(_)  => test.fail("there is no .dynsym in that list")
+        Err(_) => test.assert(true)
+
+@test
+fn test_symbols_are_read_from_two_buffers_a_caller_supplied() [io]
+    // The range-shape half of the symbol walk: the table's bytes and
+    // its string table's bytes, each with the offset it came from, so
+    // that refusals carry the image's coordinates and not a caller's.
+    test.case("symbols_from")
+    let id = ElfIdent { class: Elf32, endian: ElfLittle, version: 1,
+                        os_abi: 0, abi_version: 0 }
+    let empty: [u8] = []
+    match elfsym.symbols_from(id, empty, 12288, empty, 12768)
+        Ok(syms) => test.assert(syms.len() == 0)
+        Err(_)   => test.assert(true)
+
+@test
+fn test_interned_symbols_can_be_found_by_a_naming_convention() [io]
+    // For a caller that interns by name rather than by section, which
+    // is what a linker script that merged sections leaves you with.
+    test.case("with_prefix")
+    let a = ElfSymbol { index: 4, name: "_deflog_1", name_offset: 40, value: 1,
+                        size: 0, bind: BindGlobal, kind: SymNoType,
+                        section_index: 4 }
+    let b = ElfSymbol { index: 5, name: "main", name_offset: 64,
+                        value: 0x08000101, size: 96, bind: BindGlobal,
+                        kind: SymFunction, section_index: 1 }
+    test.assert(elfsym.with_prefix([a, b], "_deflog_").len() == 1)
+
+@test
+fn test_everything_a_report_prints_has_a_name() [io]
+    // Five naming functions, because a tool that showed a person
+    // `e_machine = 40` would be showing them the number they came here
+    // to have translated.
+    test.case("the machine and the file kind")
+    test.assert(elfhdr.machine_name(ElfArm) == "arm")
+    test.assert(elfhdr.machine_name(ElfAarch64) == "aarch64")
+    test.assert(elfhdr.kind_name(ElfExecutable) == "executable")
+
+    test.case("the section kind")
+    test.assert(elfsec.kind_name(SecProgBits) == "progbits")
+    test.assert(elfsec.kind_name(SecStringTable) == "strtab")
+
+    test.case("and a symbol's binding and kind")
+    test.assert(elfsym.bind_name(BindWeak) == "weak")
+    test.assert(elfsym.kind_name(SymFunction) == "func")

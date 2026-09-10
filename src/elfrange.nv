@@ -1,0 +1,109 @@
+// elfrange.nv — the one type that makes this package sans-IO: a place
+// in a file, said out loud.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THE SHAPE, AND WHY IT IS THIS ONE
+//
+// `elf-nv` is a `core` package, so its budget is no effects at all: it
+// cannot open a file, seek in one, or read from a probe.  An ELF file
+// is also the one format where that constraint is a gift rather than a
+// tax, because ELF is INDEXED — a table of headers, each of which says
+// where its bytes are — and the whole point of an index is that you do
+// not read what you did not want.
+//
+// So every answer this package gives about WHERE something is, is an
+// `ElfRange`, and it means both directions at once:
+//
+//   - to a caller that already holds the whole file, it is a SPAN into
+//     the buffer it handed over, and `elfrange.slice` cuts it out;
+//   - to a caller that holds no file at all — a probe reading a target's
+//     flash, a tool reading a 900 MB debug build off disk — it is a
+//     REQUEST: read these `len` bytes at this `at` and hand them back.
+//
+// One type for both because they are one fact.  `docs/publishing.md`
+// § How a `core` package takes bytes from its host calls the second one
+// "the core asks, the host performs", and lists it as the right shape
+// for an indexed format that streaming would throw away.  Both are
+// exercised: `elffile.parse` is the first, and `elfhdr.ident_range`
+// through `elfsym.symbols_from` is the second, written as the sequence
+// of ranges a caller reads in.
+//
+// WHY NOT A SLICE TYPE THAT BORROWS
+//
+// Because a borrow would tie the range to the buffer it came from, and
+// half the callers here have no buffer.  A range is two integers; it
+// survives being written to a file, sent to a probe, or held while the
+// image it describes is not in memory at all.
+
+// ElfRange is `len` bytes starting at `at`, counted from the first byte
+// of the image.
+//
+// Always from the image, never from the start of the table being
+// walked: a caller that read one range out of a file and is now parsing
+// it holds the range's own `at` and adds it, because it is the only
+// party that knows it did that.
+pub struct ElfRange
+    // Byte offset from the start of the image.  Never negative.
+    at: Int
+    // Byte count.  Zero is ordinary — a `SHT_NOBITS` section like
+    // `.bss` occupies no file bytes at all, and its range is the empty
+    // one at the offset the header gave.
+    len: Int
+
+// range is `len` bytes at `at`.
+//
+// ```novo
+// use elfrange
+//
+// fn main() [io]
+//     let r = elfrange.range(64, 128)
+//     println("${r.len} bytes at ${r.at}")
+// ```
+pub fn range(at: Int, len: Int) -> ElfRange
+    todo("elf-nv.elfrange.range")
+
+// empty is the zero-length range at `at`.
+//
+// Named rather than left to `range(at, 0)` because a `SHT_NOBITS`
+// section is the common case and a reader that meets one should see
+// what it is.
+pub fn empty(at: Int) -> ElfRange
+    todo("elf-nv.elfrange.empty")
+
+// range_end is the offset one past the last byte, which is `at + len`.
+pub fn range_end(r: ElfRange) -> Int
+    todo("elf-nv.elfrange.range_end")
+
+// range_fits says whether the whole range is inside an image of
+// `total` bytes.
+//
+// The check every header field gets before it is believed: a section
+// header is a pair of numbers a linker wrote, and nothing stops it
+// naming bytes past the end of the file.  A caller doing its own
+// reading asks this before it seeks.
+pub fn range_fits(r: ElfRange, total: Int) -> Bool
+    todo("elf-nv.elfrange.range_fits")
+
+// slice cuts the range out of an image the caller holds.
+//
+// The convenience half of the type, for the caller that DID read the
+// whole file.  It copies: novo-lang has no borrowing slice, so the
+// alternative to a copy is the range itself, which is why the range is
+// what every other function here returns.
+//
+// A range that does not fit is `ElfTruncated` with the two numbers,
+// rather than a short read — a caller that got fewer bytes than it
+// asked for and was not told is a caller that parses garbage.
+pub fn slice(image: [u8], r: ElfRange) -> Result<[u8], ElfError>
+    todo("elf-nv.elfrange.slice")
+
+// sub is the range of `len` bytes at `offset` INSIDE `r`, expressed
+// back in the image's own coordinates.
+//
+// The arithmetic a caller reading in ranges gets wrong once: it has the
+// section table's bytes in a buffer of its own, it wants the third
+// entry, and the offset it must report in an error is the image's, not
+// the buffer's.  Doing it here means doing it once.
+pub fn sub(r: ElfRange, offset: Int, len: Int) -> Result<ElfRange, ElfError>
+    todo("elf-nv.elfrange.sub")

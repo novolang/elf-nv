@@ -1,0 +1,245 @@
+// elfhdr.nv — the first sixteen bytes, and then the rest of the header
+// they told you how to read.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// WHY THE HEADER IS PARSED IN TWO STEPS
+//
+// An ELF header cannot be parsed in one pass, because its own SIZE and
+// its own BYTE ORDER are in it.  `e_ident` is sixteen bytes with a
+// fixed layout and no endianness at all — magic, class, data, version,
+// OS ABI — and everything after it is laid out according to what those
+// sixteen bytes said: 52 bytes little-endian for a 32-bit file, 64
+// bytes big-endian for a 64-bit one, and so on for all four
+// combinations.
+//
+// So `ident` reads the sixteen bytes, `header_range` says how many
+// bytes the rest needs, and `header_from` reads them.  A caller with
+// the whole file in hand calls `header` and never sees the seam; a
+// caller reading ranges off a probe needs it, because it has to know
+// how much to read before it reads it.
+//
+// FOUR COMBINATIONS, ALL OF THEM READ
+//
+// 32- and 64-bit, little- and big-endian.  A host tool that only read
+// 32-bit little-endian would cover every Cortex-M firmware and fail on
+// the first RISC-V64 board and every big-endian MIPS router, and the
+// difference is a byte-order argument threaded through the readers
+// rather than a second parser.
+
+// ElfClass is whether the file's addresses and offsets are four bytes
+// or eight.
+//
+// It changes the size of the header, the size of a section header and
+// the size of a symbol, which is why it is read first and carried
+// everywhere.
+pub enum ElfClass
+    // `ELFCLASS32`: 32-bit offsets.  Every Cortex-M firmware.
+    Elf32
+    // `ELFCLASS64`: 64-bit offsets.  Every host binary this decade.
+    Elf64
+
+// ElfEndian is the byte order of every multi-byte field after
+// `e_ident`.
+pub enum ElfEndian
+    // `ELFDATA2LSB`: least significant byte first.
+    ElfLittle
+    // `ELFDATA2MSB`: most significant byte first.  Big-endian MIPS,
+    // SPARC, and some PowerPC.
+    ElfBig
+
+// ElfKind is `e_type`: what the file is for.
+//
+// The arm a firmware tool cares about is `ElfExecutable`, and the
+// unnamed values are kept rather than refused because ELF's ranges for
+// OS- and processor-specific types are open by design.
+pub enum ElfKind
+    // `ET_REL`: an object file, not yet linked.
+    ElfRelocatable
+    // `ET_EXEC`: a linked executable at a fixed address.  A firmware
+    // image.
+    ElfExecutable
+    // `ET_DYN`: a shared object, or a position-independent executable.
+    ElfSharedObject
+    // `ET_CORE`: a core dump.
+    ElfCoreFile
+    // Anything else, including the OS- and processor-specific ranges.
+    ElfOtherKind(value: Int)
+
+// ElfMachine is `e_machine`: the instruction set.
+//
+// Named for the six that a novo-lang toolchain actually produces or
+// reads, and kept as a number for everything else.  It is here because
+// a decoder that meets a firmware for the wrong architecture should say
+// which one, not "the symbols look odd".
+pub enum ElfMachine
+    // `EM_ARM` (40): 32-bit Arm, which is every Cortex-M.
+    ElfArm
+    // `EM_AARCH64` (183).
+    ElfAarch64
+    // `EM_RISCV` (243), both widths — the class says which.
+    ElfRiscV
+    // `EM_386` (3).
+    ElfX86
+    // `EM_X86_64` (62).
+    ElfAmd64
+    // `EM_XTENSA` (94): the ESP32 family.
+    ElfXtensa
+    // Anything else, by its number.
+    ElfOtherMachine(value: Int)
+
+// ElfIdent is the first sixteen bytes: what the file is, before any of
+// it can be read.
+//
+// A separate type from `ElfHeader` because it is separately READABLE —
+// sixteen bytes with no endianness — and because it is the value
+// `header_range` needs in order to say how much more to read.
+pub struct ElfIdent
+    class: ElfClass
+    endian: ElfEndian
+    // `EI_VERSION`, which is 1 and has been since 1995.  Kept as a
+    // number rather than asserted away so that a file claiming
+    // otherwise is reported with the value it claimed.
+    version: Int
+    // `EI_OSABI`: 0 for System V, 3 for Linux, 97 for Arm.  Not
+    // interpreted here; a caller that cares matches the number.
+    os_abi: Int
+    // `EI_ABIVERSION`.
+    abi_version: Int
+
+// ElfHeader is the file header, with the two tables it points at
+// expressed as ranges rather than as raw offsets.
+//
+// `section_table` and `program_table` are `ElfRange` — `e_shoff` with
+// `e_shnum * e_shentsize` already multiplied out — because that
+// multiplication is the one an author writing this by hand gets wrong,
+// and because a range is what a caller reading off a probe wants to be
+// handed.
+pub struct ElfHeader
+    ident: ElfIdent
+    kind: ElfKind
+    machine: ElfMachine
+    // `e_entry`: the address execution starts at.  Zero for an object
+    // file.
+    entry: Int
+    // `e_shoff` and the section count multiplied out.  The empty range
+    // at 0 when the file has no section table at all.
+    section_table: ElfRange
+    // `e_shentsize`: 40 for a 32-bit file, 64 for a 64-bit one.  Kept
+    // because a file whose stride disagrees with its class is refused
+    // WITH the number it claimed.
+    section_entry_size: Int
+    // `e_shnum` as the file wrote it.  ZERO IS NOT ALWAYS ZERO: a file
+    // with more than 65,279 sections writes 0 here and puts the real
+    // count in section 0's `sh_size`.  This field is the raw value and
+    // `elfsec.sections` is what resolves it, because resolving it needs
+    // a read this function does not do.
+    section_count: Int
+    // `e_shstrndx`: the section holding section names, as the file
+    // wrote it.  `SHN_XINDEX` (0xFFFF) means the real index is in
+    // section 0's `sh_link`, resolved in `elfsec` for the same reason.
+    section_names_index: Int
+    // `e_phoff` and the program header count multiplied out.  Read, so
+    // that a caller can see there are program headers, and not parsed:
+    // see the README, § What is deliberately not here.
+    program_table: ElfRange
+    // `e_phentsize`.
+    program_entry_size: Int
+    // `e_phnum`.
+    program_count: Int
+    // `e_flags`: processor-specific.  On Arm it carries the EABI
+    // version and the float ABI, which is why it is kept.
+    flags: Int
+
+// is_elf says whether the buffer begins with `0x7F 'E' 'L' 'F'`.
+//
+// Four bytes and no allocation, for a tool deciding whether to hand a
+// file to this package at all — a linker script and a `.hex` are the
+// two things most often passed to an ELF reader by mistake.
+//
+// ```novo
+// use elfhdr
+//
+// fn main() [io]
+//     let magic = [0x7F as u8, 0x45 as u8, 0x4C as u8, 0x46 as u8]
+//     if elfhdr.is_elf(magic)
+//         println("an ELF file")
+// ```
+pub fn is_elf(image: [u8]) -> Bool
+    todo("elf-nv.elfhdr.is_elf")
+
+// ident_range is the first sixteen bytes, which is what a caller
+// reading in ranges asks for first.
+//
+// A function rather than a constant so that the whole range shape reads
+// as one vocabulary: `ident_range`, then `header_range`, then
+// `elfsec.section_table_range`, each answered by a read.
+pub fn ident_range() -> ElfRange
+    todo("elf-nv.elfhdr.ident_range")
+
+// ident reads `e_ident` — the magic, the class, the byte order — out of
+// the first sixteen bytes of the image.
+//
+// Takes the image and not just those sixteen bytes, so that the offsets
+// in a refusal are the image's own.  A caller that read exactly sixteen
+// bytes passes them; the offsets are then the same numbers, because
+// `e_ident` starts at 0.
+pub fn ident(image: [u8]) -> Result<ElfIdent, ElfError>
+    todo("elf-nv.elfhdr.ident")
+
+// header_range is how much of the image the file header occupies, given
+// what `e_ident` said: 52 bytes for a 32-bit file, 64 for a 64-bit one.
+//
+// THE FUNCTION THE TWO-STEP PARSE EXISTS FOR.  A caller reading from a
+// probe has sixteen bytes and needs to know how many more to ask for
+// before it can ask for them; this is the answer, and there is no other
+// way to get it.
+pub fn header_range(id: ElfIdent) -> ElfRange
+    todo("elf-nv.elfhdr.header_range")
+
+// header reads the whole file header out of an image the caller holds.
+//
+// `ident` and `header_from` in one call, for the ordinary host case.
+pub fn header(image: [u8]) -> Result<ElfHeader, ElfError>
+    todo("elf-nv.elfhdr.header")
+
+// header_from reads the file header out of the bytes `header_range`
+// asked for, with the identification already in hand.
+//
+// `head` is the header's own bytes and `at` is where they came from in
+// the image, so that a refusal reports the image's offset rather than
+// an offset into a buffer only the caller has ever seen.
+pub fn header_from(id: ElfIdent, head: [u8], at: Int) -> Result<ElfHeader, ElfError>
+    todo("elf-nv.elfhdr.header_from")
+
+// class_bits is 32 or 64.
+//
+// For a report, and for a caller sizing its own reads of a table this
+// package does not parse.
+pub fn class_bits(c: ElfClass) -> Int
+    todo("elf-nv.elfhdr.class_bits")
+
+// section_entry_size is how many bytes one section header occupies for
+// a file of this class: 40, or 64.
+//
+// The number `ElfBadSectionEntry` compares against, exposed because a
+// caller reading a single section header off a probe needs it to size
+// the read.
+pub fn section_entry_size(c: ElfClass) -> Int
+    todo("elf-nv.elfhdr.section_entry_size")
+
+// symbol_entry_size is how many bytes one symbol occupies for a file of
+// this class: 16, or 24.
+pub fn symbol_entry_size(c: ElfClass) -> Int
+    todo("elf-nv.elfhdr.symbol_entry_size")
+
+// machine_name is the instruction set as the name a person uses —
+// `"arm"`, `"aarch64"`, `"riscv"` — or `"machine 0x…"` for one this
+// package has no name for.
+pub fn machine_name(m: ElfMachine) -> Str
+    todo("elf-nv.elfhdr.machine_name")
+
+// kind_name is `e_type` as one word: `"executable"`, `"relocatable"`,
+// `"shared object"`, `"core"`, or `"type 0x…"`.
+pub fn kind_name(k: ElfKind) -> Str
+    todo("elf-nv.elfhdr.kind_name")

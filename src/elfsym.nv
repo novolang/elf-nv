@@ -1,0 +1,168 @@
+// elfsym.nv — the symbol table, with the names resolved.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// WHY THIS MODULE IS IN A PACKAGE ABOUT DEFERRED LOGGING
+//
+// The deferred-logging story keeps a firmware's log strings in the ELF
+// and sends an index on the wire.  The index IS a symbol's value: the
+// device emits `4`, the host looks for the symbol whose `st_value` is 4
+// in the section the strings live in, and the symbol's NAME is the log
+// line.  So a symbol table walk is not a debugging convenience here —
+// it is the lookup the whole design rests on, and `deflog-decoder`'s
+// table is built out of exactly this list.
+//
+// A SYMBOL'S NAME IS IN A THIRD PLACE
+//
+// A symbol carries `st_name`, an offset into a string table, and WHICH
+// string table is `sh_link` on the symbol table's own section header.
+// It is not `e_shstrndx`: that one names SECTIONS.  Confusing the two
+// gives a symbol table whose names are all section names, offset by
+// whatever happened to be at those byte positions, which reads as
+// plausible garbage and is the reason this is one function rather than
+// a note in a README.
+
+// ElfSymbolBind is `ELF32_ST_BIND(st_info)`: how the symbol behaves
+// when two objects both define it.
+pub enum ElfSymbolBind
+    // `STB_LOCAL`: not visible outside its object file.  Every symbol
+    // before `sh_info` in the table is one.
+    BindLocal
+    // `STB_GLOBAL`: visible, and a duplicate is an error.
+    BindGlobal
+    // `STB_WEAK`: visible, and a strong definition overrides it.
+    BindWeak
+    // Anything else, including the OS- and processor-specific ranges.
+    BindOtherLink(value: Int)
+
+// ElfSymbolKind is `ELF32_ST_TYPE(st_info)`: what the symbol names.
+pub enum ElfSymbolKind
+    // `STT_NOTYPE`: unspecified.  The interned strings of the deferred
+    // logging story are these — they name nothing that occupies memory,
+    // and their `st_value` is an index rather than an address.
+    SymNoType
+    // `STT_OBJECT`: a data object.
+    SymObject
+    // `STT_FUNC`: a function.
+    SymFunction
+    // `STT_SECTION`: the section it is associated with.
+    SymSection
+    // `STT_FILE`: the source file the following symbols came from.
+    SymFile
+    // `STT_COMMON`: an uninitialised common block.
+    SymCommon
+    // `STT_TLS`: thread-local storage.
+    SymThreadLocal
+    // Anything else, by its number.
+    SymOtherKind(value: Int)
+
+// ElfSymbol is one entry of a symbol table, named.
+pub struct ElfSymbol
+    // Position in the symbol table, which is what a relocation's symbol
+    // field points at.
+    index: Int
+    // The name, resolved through the string table `sh_link` named.
+    name: Str
+    // `st_name`, the raw offset into that string table.
+    name_offset: Int
+    // `st_value`.  An ADDRESS for a symbol in an allocated section, and
+    // an arbitrary number for one that is not — which is what the
+    // deferred-logging story uses: the interned string's index.
+    value: Int
+    // `st_size`: the object's size in bytes, or 0.
+    size: Int
+    bind: ElfSymbolBind
+    kind: ElfSymbolKind
+    // `st_shndx`: the section this symbol belongs to.  `SHN_UNDEF` (0)
+    // for an undefined symbol, `SHN_ABS` (0xFFF1) for an absolute one.
+    section_index: Int
+
+// symbol_table is the file's `SHT_SYMTAB` section.
+//
+// `ElfNoSymbolTable` when the file has none — a stripped binary, which
+// is an ordinary thing for a release build to be.  A `Result` rather
+// than an option because a caller reaching for symbols has already
+// decided it needs them; `elfsec.find(secs, ".symtab")` is the question
+// asked without that commitment.
+//
+// `SHT_DYNSYM` is NOT this.  The dynamic symbol table holds only what
+// dynamic linking needs, which for a firmware is nothing; `dynamic_
+// symbol_table` is there for a caller reading a shared object.
+pub fn symbol_table(secs: [ElfSection]) -> Result<ElfSection, ElfError>
+    todo("elf-nv.elfsym.symbol_table")
+
+// dynamic_symbol_table is the file's `SHT_DYNSYM` section.
+pub fn dynamic_symbol_table(secs: [ElfSection]) -> Result<ElfSection, ElfError>
+    todo("elf-nv.elfsym.dynamic_symbol_table")
+
+// name_table is the string table a symbol table's names live in, found
+// through its `sh_link`.
+//
+// THE FUNCTION THAT EXISTS SO THE MISTAKE CANNOT BE MADE.  The names of
+// symbols are not in `e_shstrndx`'s section; they are in the one this
+// returns, and reading them from the wrong table produces names that
+// look almost right.
+pub fn name_table(secs: [ElfSection], symtab: ElfSection) -> Result<ElfSection, ElfError>
+    todo("elf-nv.elfsym.name_table")
+
+// symbols is every symbol of the file's `SHT_SYMTAB`, named, out of an
+// image the caller holds.
+//
+// The whole walk in one call, for the ordinary host case.
+//
+// ```novo
+// use elffile
+// use elfsym
+//
+// fn interned(image: [u8]) -> Result<[ElfSymbol], ElfError>
+//     let f = elffile.parse(image)!
+//     let secs = elffile.sections(f)
+//     elfsym.symbols(f.header, secs, image)
+// ```
+pub fn symbols(h: ElfHeader, secs: [ElfSection], image: [u8]) -> Result<[ElfSymbol], ElfError>
+    todo("elf-nv.elfsym.symbols")
+
+// symbols_from reads a symbol table out of the two ranges a caller read
+// for itself: the table's bytes and its string table's bytes.
+//
+// The range-shape half.  `table_at` and `names_at` are where each
+// buffer came from in the image, so that refusals carry the image's
+// offsets rather than a caller's.
+pub fn symbols_from(id: ElfIdent, table: [u8], table_at: Int, names: [u8],
+                    names_at: Int) -> Result<[ElfSymbol], ElfError>
+    todo("elf-nv.elfsym.symbols_from")
+
+// find is the first symbol with this name, or `None`.
+//
+// An option, for the same reason `elfsec.find` is one: asking whether a
+// firmware defines `_deflog_version_` is a question whose answer may be
+// no, and a `Result` would make every such question look like a fault.
+pub fn find(syms: [ElfSymbol], name: Str) -> ?ElfSymbol
+    todo("elf-nv.elfsym.find")
+
+// in_section is every symbol whose `st_shndx` is this section index, in
+// table order.
+//
+// The query the deferred-logging table is built with: every interned
+// string of a firmware is a symbol in one section, and this is how they
+// are collected without walking the whole table per lookup.
+pub fn in_section(syms: [ElfSymbol], index: Int) -> [ElfSymbol]
+    todo("elf-nv.elfsym.in_section")
+
+// with_prefix is every symbol whose name starts with `prefix`, in table
+// order.
+//
+// For a caller that interns by naming convention rather than by
+// section — which is what a linker script that merges sections leaves
+// you with.
+pub fn with_prefix(syms: [ElfSymbol], prefix: Str) -> [ElfSymbol]
+    todo("elf-nv.elfsym.with_prefix")
+
+// bind_name is `"local"`, `"global"`, `"weak"`, or `"bind 0x…"`.
+pub fn bind_name(b: ElfSymbolBind) -> Str
+    todo("elf-nv.elfsym.bind_name")
+
+// kind_name is `"notype"`, `"object"`, `"func"`, `"section"`,
+// `"file"`, or `"type 0x…"`.
+pub fn kind_name(k: ElfSymbolKind) -> Str
+    todo("elf-nv.elfsym.kind_name")
