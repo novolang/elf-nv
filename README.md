@@ -1,235 +1,271 @@
 # elf-nv
 
-**Status: NOT IMPLEMENTED — interface only.**
+ELF is the file format compilers and linkers produce on Linux and on
+most embedded targets: an executable, a shared library, an object file
+or a firmware image. It is specified by the Tool Interface Standard's
+[ELF specification](https://refspecs.linuxfoundation.org/elf/elf.pdf)
+and the System V ABI's processor supplements. This package reads the
+part of it a host tool needs: the file header, the section table with
+names resolved, and the symbol table.
 
-Every public function below is published with its signature and its
-effect row, and every body is `todo()`.  Installing this package works;
-calling it panics with `not implemented`.
+**Status: NOT IMPLEMENTED — interface only.** Every function is declared
+with its full signature, but every body is a `todo()` that panics when
+called. The package is published so its design can be reviewed and
+depended on before it is implemented. Version 0.1.0 will be the first
+working release.
 
-## What this is
+## What an ELF file is
 
-The part of ELF a host tool needs: the file header in all four
-class-and-endianness combinations, the section header table with names
-resolved through the section name table, the symbol table with names
-resolved through *its* string table, and a way to say where a section's
-bytes are.
+An ELF file opens with sixteen bytes called **e_ident**. They have a
+fixed layout and no byte order of their own: four bytes of magic, then
+the **class**, which says whether addresses are four bytes or eight, and
+the **data** byte, which says whether multi-byte fields are
+little-endian or big-endian. Everything after those sixteen bytes is
+laid out according to what they said.
 
-Nothing here opens a file.  The image is a `[u8]` the caller read, or —
-for a caller that has no image at all — a sequence of byte ranges this
-package asks for and the caller answers.  Both work, and the second is
-the reason the first does not hold the bytes.
+The rest of the file header says what the file is for, which machine it
+is for, where execution starts, and where two tables live. The
+**program header table** describes how the file is loaded into memory.
+The **section header table** describes the file's contents as named
+pieces: `.text` for code, `.data` for initialised data, `.symtab` for
+the symbol table, `.debug_info` for debugging information.
 
-## Adding it, and checking it
+A **section header** is a fixed-size record giving a section's kind, its
+flags, its address at run time, and the offset and length of its bytes
+in the file. Its name is not in the record. The record holds a byte
+offset into a **string table**, which is a section whose contents are
+NUL-terminated strings, and the header says which section that is.
 
-```bash
-novo pkg add elf-nv           # into your novo.toml
-novo pkg build                # type- and effect-check the package
-novo test --isolate tests/elfhdr_tests.nv
+A **symbol** is a fixed-size record in `.symtab` giving a name offset, a
+value, a size, a binding, a kind and the section it belongs to. Its
+names live in a different string table, named by the symbol table
+section's own link field.
+
+| Quantity | Value |
+| --- | --- |
+| Bytes of `e_ident` | 16 |
+| Magic | `0x7F` `E` `L` `F` |
+| File header size, 32-bit and 64-bit | 52 and 64 bytes |
+| Section header size, 32-bit and 64-bit | 40 and 64 bytes |
+| Symbol record size, 32-bit and 64-bit | 16 and 24 bytes |
+| ELF version, since 1995 | 1 |
+| Highest ordinary section index | 65279 |
+| Section index meaning "none" | 0 |
+| Section index meaning "absolute" | `0xFFF1` |
+
+## Install
+
+```
+novo pkg add elf-nv
 ```
 
-`novo test` is red today and that is the point of the release: every
-assertion fails with `not implemented: elf-nv.<module>.<fn>`.  They turn
-green one at a time as bodies land.
-
-## The one example that will work
+## Example
 
 ```novo
+use std.bytes
+use std.fs
 use elffile
-use elfsec
 use elfsym
 
-// Where a firmware keeps its deferred-log strings, and what they are.
-fn interned(image: [u8]) -> Result<[ElfSymbol], ElfError>
-    let f = elffile.parse(image)!
-    match elfsec.find(f.sections, ".defmt")
-        None    => Ok([])
-        Some(s) =>
-            let all = elfsym.symbols(f.header, f.sections, image)!
-            Ok(elfsym.in_section(all, s.index))
+fn main() [io, fs]
+    match fs.read_bytes("firmware.elf")
+        None      => println("no such file")
+        Some(raw) =>
+            // This package takes the image as a list of bytes. It never
+            // reads a file itself.
+            let image = bytes.to_byte_list(raw)
+
+            match elffile.parse(image)
+                Err(e) => println(e.message())
+                Ok(f)  =>
+                    // The section count, from the parsed index.
+                    println("${elffile.section_count(f)} sections")
+
+                    // One symbol by name. The image is handed back,
+                    // because the parsed file does not hold it.
+                    match elffile.symbol(f, image, "main")
+                        Err(e2)     => println(e2.message())
+                        Ok(None)    => println("no symbol called main")
+                        Ok(Some(s)) => println("${s.value}")
 ```
 
-## The layer, and why
+Build and test with `novo pkg build` and `novo test`. Today `novo test`
+fails on purpose: every test reaches a
+`not implemented: elf-nv.<module>.<fn>` panic. The tests are the
+specification the implementation will have to satisfy.
 
-`core`.  An ELF file is bytes somebody already read, and reading it is
-arithmetic: fixed-width integers at known offsets, a table walked by a
-stride, NUL-terminated strings indexed by byte offset.  There is not one
-effect row in the package, and there is no function that could honestly
-have one.
+## What the package contains
 
-**There is no `tests/embedded_probe.nv` in this release, and its absence
-is a decision rather than a defect.**  A `core` package's probe is a
-claim that the code runs on a microcontroller, and this code has no
-business on one: the ELF of a firmware is read by the machine that built
-or is debugging it, never by the firmware.  The audit's `core-embedded`
-row passes for a package that makes no such claim, which is the right
-answer here.
-
-The claim would also not have held today.  `Result<T, E>` cannot be
-spelled at `@tier(embedded)` — the `Error` trait is not in the prelude
-at that tier [E2005], and SPEC § 3.4 requires the impl [E2018] — which
-is `result-is-unusable-at-tier-embedded-no-error-trait`, open against
-the toolchain.  Every refusal in this package is a `Result` and stays
-one; a package that dropped its error reporting to pass an audit row
-would be reporting a toolchain defect as a design.
-
-## The load-bearing interface
-
-One type, and the fact that it means two things at once.
-
-```novo
-pub struct ElfRange
-    at: Int
-    len: Int
-
-pub fn section_range(f: ElfFile, name: Str) -> ?ElfRange
-pub fn section_bytes(f: ElfFile, name: Str, image: [u8]) -> Result<?[u8], ElfError>
-```
-
-**Where is it, and may I have it, are two questions.**  A `core` package
-cannot read, so every answer this package gives about a position is an
-`ElfRange` — and an `ElfRange` reads two ways depending on who is
-holding it.  To a tool with the whole firmware in a buffer it is a
-*span*: `elfrange.slice` cuts it out.  To a probe reading a target's
-flash, or a tool that will not hold a 900 MB debug build in memory, it
-is a *request*: read `len` bytes at `at` and hand them back.
-
-That is `docs/publishing.md` § How a `core` package takes bytes from its
-host's third shape — "the core asks, the host performs" — and ELF is the
-format it was written for.  ELF is an index: a table of headers, each
-saying where its bytes are, and the entire point of an index is that you
-do not read what you did not want.  A streaming parser would throw that
-away; a whole-file parser would forbid the probe.
-
-The consequence is the second load-bearing fact:
-
-```novo
-pub struct ElfFile
-    header: ElfHeader
-    sections: [ElfSection]
-```
-
-**An `ElfFile` is the index and not the bytes.**  There is no `image`
-field, and there will not be one.  Every function that answers with
-bytes takes the image back from the caller, which costs a parameter at
-each call and buys two things: the same `ElfFile` works for the caller
-who never had a file, and a `core` package is never quietly holding a
-megabyte on somebody's behalf.  `elffile.from_parts` is how the
-range-reading caller arrives at one, after which every query works
-identically for both.
-
-The third is that the header is parsed in **two steps**, because an ELF
-header cannot be parsed in one: its own size and its own byte order are
-inside it.
-
-```novo
-pub fn ident(image: [u8]) -> Result<ElfIdent, ElfError>
-pub fn header_range(id: ElfIdent) -> ElfRange
-pub fn header_from(id: ElfIdent, head: [u8], at: Int) -> Result<ElfHeader, ElfError>
-```
-
-`e_ident` is sixteen bytes with a fixed layout and no endianness;
-everything after it is laid out according to what those sixteen bytes
-said.  A caller with the file calls `header` and never sees the seam.  A
-caller reading ranges *needs* it — it has sixteen bytes and has to know
-how many more to ask for before it can ask.
-
-## The two places a file lies about its own shape
-
-Both are resolved here rather than left to the caller, because a caller
-that did not know about them reads a table of length zero out of a file
-with forty thousand sections and reports nothing wrong.
-
-- A file with more than 65,279 sections writes `e_shnum = 0` and puts
-  the real count in section 0's `sh_size`.
-- A file whose section name table is past index 65,279 writes
-  `e_shstrndx = SHN_XINDEX` and puts the real index in section 0's
-  `sh_link`.
-
-Section 0 is otherwise entirely zero, and holding those two escapes is
-its whole purpose.
-
-## What is deliberately not here
-
-Three parts of ELF are absent on purpose, and each has a place it will
-go if it is ever wanted.
-
-- **Program headers.**  `ElfHeader` says where they are and how many —
-  `program_table`, `program_entry_size`, `program_count` — and does not
-  parse them.  They describe how a file is *loaded*, which matters to a
-  loader and to a flashing tool and to nothing that reads symbols.  A
-  flashing tool that wanted them would take a `elf-load-nv` beside this
-  one, sharing `ElfRange` and `ElfHeader`, rather than making every
-  consumer of a symbol table carry a segment parser.
-- **Relocations.**  `SHT_REL` and `SHT_RELA` sections are found and
-  named like any other, and their contents are not decoded.  Relocations
-  are a linker's business and their format is per-architecture — the Arm
-  types alone fill a document — so a port of them belongs in whatever
-  package needs to link, not here.
-- **DWARF.**  `.debug_info` and its siblings are sections like any
-  other, and this package hands over their ranges.  DWARF is a
-  substantial format in its own right and its natural home is a
-  `dwarf-nv` that takes elf-nv as a dependency, which is exactly how
-  `gimli` sits on top of `object` upstream.
-
-Also absent, and worth saying: **no writing.**  This package reads.  A
-tool that patches a section's bytes has the range and the image and can
-do it itself; a tool that *builds* an ELF wants a different package with
-a different shape.
-
-## What `Int` costs
-
-novo-lang's `Int` is 64 bits and signed, and ELF's `Elf64_Addr` and
-`Elf64_Xword` are 64 bits and unsigned.  A value at or above 2^63 —
-a kernel address with the top bit set, a size no file has — does not fit,
-and this package refuses it as `ElfValueTooWide` naming the field rather
-than handing back a negative number that looks like an address.
-
-For everything this package exists to read the question does not arise:
-a firmware's addresses are 32-bit, and a host executable's are far below
-2^63.  The refusal is there so that the one file where it does arise
-says so.
-
-## The reference implementation
-
-`object` (MIT/Apache) for the shape of the API — its separation of a
-file's *parsed index* from the data behind it is what `ElfFile` is — and
-`goblin` (MIT) for the parsing itself.  The ELF specification (Tool
-Interface Standard, and the System V ABI's processor supplements) is the
-grammar and the source of the test vectors, along with `readelf`'s
-output on real firmware.
-
-Three things change in the port.  `object`'s lifetime-parameterised
-borrowing — `&'data [u8]` threaded through every type — becomes
-`ElfRange`, because novo-lang has no borrowing slice and because the
-range is what the probe-side caller needed anyway.  `goblin`'s
-"parse everything at once" `Elf::parse` becomes `elffile.parse` plus a
-sequence of range functions, so the two callers share a parser rather
-than getting two.  And the section-name and symbol-name string tables
-become one primitive, `elfsec.string_at`, rather than two nearly
-identical walkers — with `elfsym.name_table` as the function whose only
-job is to make it impossible to read symbol names out of the section
-name table, which is the mistake that produces names that look almost
-right.
-
-## Status
-
-| item | implemented |
+| Module | Contents |
 | --- | --- |
-| `elfrange` — `ElfRange` | type only |
+| `elfrange` | A place in the file: an offset and a length, with the arithmetic for cutting one out of an image and for taking a piece of one. |
+| `elferr` | The thirteen refusals, each carrying the offset it was found at, and the two questions a caller asks of one. |
+| `elfhdr` | The first sixteen bytes and the header they describe, in all four combinations of class and byte order, plus the record sizes and the names of the machines and file kinds. |
+| `elfsec` | The section header table: where it is, how to walk it with or without names, how to find a section by name or index, and how to read a string out of a string table. |
+| `elfsym` | The symbol table and the dynamic symbol table: which section each is, which string table holds its names, how to read the records, and how to select symbols by name, section or prefix. |
+| `elffile` | The two together as one value, for a caller that has the whole image: parse it once, then ask for sections, ranges, bytes and symbols. |
+
+## How to choose an entry point
+
+**`elffile.parse` is for a caller holding the whole image.** It answers
+a value carrying the header and every named section, and the rest of
+`elffile` asks questions of it.
+
+**`elfhdr.ident`, `elfhdr.header_range` and `elfhdr.header_from` are for
+a caller that has no image.** A debug probe reading a target's flash, or
+a tool that will not hold a large debug build in memory, asks for a
+range, reads it, and hands the bytes back. `elfsec.section_table_range`,
+`elfsec.sections_unnamed`, `elfsec.name_table_range` and
+`elfsec.with_names` continue the same walk, and `elffile.from_parts`
+turns the result into the same value `parse` answers.
+
+**`elffile.section_range` answers where something is, and
+`elffile.section_bytes` answers what it is.** The first needs no image.
+
+## The rules a user needs
+
+1. **A parsed file is the index, not the bytes.** `ElfFile` has no image
+   field. Every call that answers bytes takes the image back from the
+   caller. That is what lets one type serve both the caller who has the
+   file and the caller who never had it.
+2. **A range is a place, and it reads two ways.** To a caller holding
+   the image it is a span, and `elfrange.slice` cuts it out. To a caller
+   reading a target it is a request: read this many bytes at this offset
+   and hand them back.
+3. **The header is parsed in two steps, because it describes itself.**
+   Its size and its byte order are inside it. `elfhdr.ident` reads the
+   sixteen bytes, `elfhdr.header_range` says how many more are needed,
+   and `elfhdr.header_from` reads them. `elfhdr.header` is the two in
+   one call for a caller with the file.
+4. **All four combinations of class and byte order are read.** 32-bit
+   and 64-bit, little-endian and big-endian. A tool that read only
+   32-bit little-endian would cover every Cortex-M firmware and fail on
+   the first 64-bit RISC-V board.
+5. **A file with more than 65279 sections says it has none.** The real
+   count is in section 0's size field, and this package resolves it. A
+   caller that did not know would read an empty table out of a file with
+   forty thousand sections and report nothing wrong.
+6. **A file whose name table is past index 65279 hides that index
+   too.** It is in section 0's link field, and this package resolves
+   that as well. Section 0 is otherwise entirely zero, and holding those
+   two escapes is its purpose.
+7. **Section names and symbol names come from different string
+   tables.** `elfsym.name_table` is the function that answers the right
+   one for a symbol table. Reading symbol names out of the section name
+   table produces names that look almost right.
+8. **Two sections may share a name.** `elfsec.find` answers the first
+   and `elfsec.find_all` answers all of them.
+9. **A missing section is not a fault.** `elffile.section` and
+   `elfsec.find` answer nothing. A missing symbol table is a refusal,
+   because a caller reaching for symbols has already decided it needs
+   them, and a stripped release build is the ordinary way to have none.
+10. **A section with no file bytes has an empty range.** `.bss` occupies
+    memory at run time and nothing in the file.
+11. **A 64-bit field above `Int`'s range is refused.** novo-lang's `Int`
+    is signed and 64 bits wide, and ELF's addresses and sizes are
+    unsigned. `ElfValueTooWide` names the field rather than answering a
+    negative number that looks like an address. A firmware's addresses
+    are 32-bit and a host executable's are far below the limit, so this
+    is about the one file where it does arise.
+12. **A name that is not UTF-8 is refused as a conversion, not as a
+    file.** ELF names are bytes and the specification says nothing about
+    their encoding. A caller that wants those bytes takes the section's
+    range and reads them.
+13. **A string table offset that never meets a NUL is refused.**
+    `ElfUnterminatedString` names the offset.
+
+## What is not included
+
+- **Program headers.** The file header says where they are and how many,
+  and this package does not parse them. They describe how a file is
+  loaded, which matters to a loader and to a flashing tool and to
+  nothing that reads symbols.
+- **Relocations.** `SHT_REL` and `SHT_RELA` sections are found and named
+  like any other, and their contents are not decoded. The record types
+  are per-architecture, and the Arm ones alone fill a document.
+- **DWARF.** `.debug_info` and its siblings are sections like any other,
+  and this package hands over their ranges. DWARF is a large format and
+  belongs to a package that depends on this one.
+- **Writing.** This package reads. A tool patching a section's bytes has
+  the range and the image and can do it itself.
+- **A build for a microcontroller.** A firmware's ELF is read by the
+  machine that built it or is debugging it, never by the firmware, so
+  this package makes no device claim and carries no probe. The claim
+  would not hold today in any case: every refusal here is a `Result`,
+  and a `Result` cannot be spelled at the embedded tier, because the
+  `Error` trait is not in that tier's prelude.
+- **Any input or output.** Nothing here opens a file. The image arrives
+  as a list of bytes, or as answers to range requests.
+
+## Related packages
+
+- [deflog-parser](https://novo-lang.org/packages/deflog-parser) and
+  [deflog-decoder](https://novo-lang.org/packages/deflog-decoder) read a
+  firmware's interned log strings, which live in a section of its ELF
+  and are addressed by symbol.
+- [rzcobs-nv](https://novo-lang.org/packages/rzcobs-nv) frames the log
+  stream those strings are reconstructed from.
+- [dfu-nv](https://novo-lang.org/packages/dfu-nv) writes firmware onto a
+  device. It needs the program headers this package does not parse.
+- [archive-nv](https://novo-lang.org/packages/archive-nv),
+  [tar-nv](https://novo-lang.org/packages/tar-nv) and
+  [zip-nv](https://novo-lang.org/packages/zip-nv) are the other
+  container formats on the registry. Each holds files; ELF holds
+  sections of one program.
+
+## Tests
+
+```bash
+novo test tests/elfhdr_tests.nv       #  9 tests: the first sixteen bytes and the header
+novo test tests/elffile_tests.nv      # 11 tests: sections, symbols and ranges
+novo test tests/elfwalk_tests.nv      # 11 tests: the walk a caller with no image performs
+```
+
+The grammar and the vectors come from the ELF specification and the
+System V ABI's processor supplements, checked against `readelf`'s output
+on real firmware. The API shape follows the `object` crate in Rust,
+whose separation of a parsed index from the data behind it is what
+`ElfFile` is, and the parsing follows `goblin`.
+
+The suite asserts that the magic is four bytes and no more, that the
+identification is the first sixteen, that the range shape needs no
+image, that both widths have a stride the package knows, that a buffer
+which is not an ELF is refused at byte zero, that a truncation says how
+much was missing, that a parsed file does not hold the image, that a
+place is answerable without the bytes, that a section with no file bytes
+has an empty range, that an absent section is not a fault and an absent
+index is, that a name is read out of a string table by byte offset, that
+a string which never ends is refused, that a symbol names its own string
+table, that the dynamic symbol table is not the symbol table, and that
+the whole-file walk and the range walk answer alike.
+
+The tests compile today and fail at run, each on the `not implemented`
+panic that is its body. That is the expected state of an interface
+release. They turn green one at a time as bodies land.
+
+## Implementation status
+
+| Item | Implemented |
+| --- | --- |
 | `elfrange.range`, `.empty`, `.range_end`, `.range_fits`, `.slice`, `.sub` | no |
-| `elferr` — `ElfError` | type only |
-| `elferr.offset_of`, `.is_truncation`, and the `Error` impl | no |
-| `elfhdr` — `ElfClass`, `ElfEndian`, `ElfKind`, `ElfMachine`, `ElfIdent`, `ElfHeader` | types only |
+| `elferr.offset_of`, `.is_truncation`, `ElfError.message` | no |
 | `elfhdr.is_elf`, `.ident_range`, `.ident`, `.header_range`, `.header`, `.header_from` | no |
 | `elfhdr.class_bits`, `.section_entry_size`, `.symbol_entry_size`, `.machine_name`, `.kind_name` | no |
-| `elfsec` — `ElfSection`, `ElfSectionKind` | types only |
 | `elfsec.section_table_range`, `.sections`, `.sections_unnamed`, `.section_table_range_of` | no |
 | `elfsec.name_table_range`, `.with_names`, `.find`, `.find_all`, `.at`, `.string_at` | no |
 | `elfsec.kind_name`, `.is_allocated` | no |
-| `elfsym` — `ElfSymbol`, `ElfSymbolBind`, `ElfSymbolKind` | types only |
 | `elfsym.symbol_table`, `.dynamic_symbol_table`, `.name_table`, `.symbols`, `.symbols_from` | no |
 | `elfsym.find`, `.in_section`, `.with_prefix`, `.bind_name`, `.kind_name` | no |
-| `elffile` — `ElfFile` | type only |
 | `elffile.parse`, `.from_parts`, `.section`, `.sections`, `.section_at` | no |
 | `elffile.section_range`, `.section_bytes`, `.symbols`, `.symbol` | no |
 | `elffile.class`, `.endian`, `.machine`, `.entry`, `.section_count` | no |
+
+The types themselves — `ElfRange`, `ElfError`, `ElfIdent`, `ElfHeader`,
+`ElfSection`, `ElfSymbol`, `ElfFile` and the enumerations beside them —
+are declared with their fields and are what a reviewer reads.
+
+## Licence
+
+Apache-2.0. See `LICENSE`.
+
+<!-- docs/writing-a-readme.md is the style guide for this page. -->

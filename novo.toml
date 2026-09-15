@@ -1,6 +1,6 @@
 [package]
 name        = "elf-nv"
-version     = "0.0.1"
+version     = "0.0.2"
 description = "The ELF subset a host tool needs: the header in all four class/endianness combinations, the section header table with names resolved, and the symbol table.  Every answer about WHERE something is comes back as a byte range, so the same reader serves a tool holding the whole file and a probe holding none of it.  Interface only — every body is a todo()."
 license     = "Apache-2.0"
 
