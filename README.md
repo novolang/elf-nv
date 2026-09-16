@@ -190,8 +190,9 @@ turns the result into the same value `parse` answers.
   the range and the image and can do it itself.
 - **A build for a microcontroller.** A firmware's ELF is read by the
   machine that built it or is debugging it, never by the firmware, so
-  this package makes no device claim and carries no probe. The claim
-  would not hold today in any case: every refusal here is a `Result`,
+  this package does not build for a microcontroller with no heap
+  allocator and carries no probe program. It could not build for one
+  today in any case: every refusal here is a `Result`,
   and a `Result` cannot be spelled at the embedded tier, because the
   `Error` trait is not in that tier's prelude.
 - **Any input or output.** Nothing here opens a file. The image arrives
